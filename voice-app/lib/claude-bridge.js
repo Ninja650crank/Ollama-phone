@@ -1,104 +1,103 @@
 /**
- * Claude HTTP API Bridge
- * HTTP client for Claude API server with session management
+ * Ollama HTTP API Bridge
+ * HTTP client for the local Ollama API server with session management
  */
 
 const axios = require('axios');
 
-const CLAUDE_API_URL = process.env.CLAUDE_API_URL || 'http://localhost:3333';
+const OLLAMA_API_URL = process.env.OLLAMA_API_URL || process.env.CLAUDE_API_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1';
 
 /**
- * Query Claude via HTTP API with session support
- * @param {string} prompt - The prompt/question to send to Claude
+ * Query Ollama via HTTP API with optional call session metadata
+ * @param {string} prompt - The prompt/question to send to Ollama
  * @param {Object} options - Options including callId for session management
  * @param {string} options.callId - Call UUID for maintaining conversation context
  * @param {string} options.devicePrompt - Device-specific personality prompt
- * @param {number} options.timeout - Timeout in seconds (default: 30, AC27)
- * @returns {Promise<string>} Claude's response
+ * @param {number} options.timeout - Timeout in seconds (default: 60)
+ * @returns {Promise<string>} Ollama's response
  */
 async function query(prompt, options = {}) {
-  const { callId, devicePrompt, timeout = 30 } = options; // AC27: Default 30s timeout
+  const { callId, devicePrompt, timeout = 60 } = options;
   const timestamp = new Date().toISOString();
 
   try {
-    console.log(`[${timestamp}] CLAUDE Sending query to ${CLAUDE_API_URL}...`);
+    console.log(`[${timestamp}] OLLAMA Sending query to ${OLLAMA_API_URL}...`);
     if (callId) {
-      console.log(`[${timestamp}] CLAUDE Session: ${callId}`);
+      console.log(`[${timestamp}] OLLAMA Session: ${callId}`);
     }
     if (devicePrompt) {
-      console.log(`[${timestamp}] CLAUDE Device prompt: ${devicePrompt.substring(0, 50)}...`);
+      console.log(`[${timestamp}] OLLAMA Device prompt: ${devicePrompt.substring(0, 50)}...`);
     }
 
+    const fullPrompt = devicePrompt
+      ? `${devicePrompt}\n\n${prompt}`
+      : prompt;
+
     const response = await axios.post(
-      `${CLAUDE_API_URL}/ask`,
-      { prompt, callId, devicePrompt },
+      `${OLLAMA_API_URL}/api/chat`,
+      {
+        model: OLLAMA_MODEL,
+        stream: false,
+        messages: [
+          { role: 'user', content: fullPrompt }
+        ]
+      },
       {
         timeout: timeout * 1000,
         headers: { 'Content-Type': 'application/json' }
       }
     );
 
-    if (!response.data.success) {
-      throw new Error(response.data.error || 'Claude API returned failure');
+    const content = response.data?.message?.content;
+    if (!content) {
+      throw new Error('Ollama API returned no message content');
     }
 
-    console.log(`[${timestamp}] CLAUDE Response received (${response.data.duration_ms}ms)`);
-    if (response.data.sessionId) {
-      console.log(`[${timestamp}] CLAUDE Session ID: ${response.data.sessionId}`);
-    }
-    return response.data.response;
+    console.log(`[${timestamp}] OLLAMA Response received (${response.data?.eval_duration || 0}ms)`);
+    return content;
 
   } catch (error) {
-    // AC26: API server unreachable during call - don't crash, return helpful message
-    if (error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' || error.code === 'ENETUNREACH') {
-      console.warn(`[${timestamp}] CLAUDE API server unreachable (${error.code})`);
-      return "I'm having trouble connecting to my brain right now. The API server may be offline or unreachable. Please try again later.";
+    const code = error && error.code;
+    if (code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
+      console.warn(`[${timestamp}] OLLAMA API server unreachable (${code})`);
+      return "I'm having trouble connecting to my model right now. The Ollama API server may be offline or unreachable. Please try again later.";
     }
 
-    // AC27: Timeout with helpful error message
-    if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
-      console.error(`[${timestamp}] CLAUDE Timeout after ${timeout} seconds`);
-      return "I'm sorry, that request took too long. This might mean the API server is slow or there's a network issue. Try asking something simpler, or check that claude-phone api-server is running.";
+    if (code === 'ETIMEDOUT' || code === 'ECONNABORTED') {
+      console.error(`[${timestamp}] OLLAMA Timeout after ${timeout} seconds`);
+      return "I'm sorry, that request took too long. This might mean the Ollama API server is slow or there's a network issue. Try asking something simpler, or check that the Ollama service is running.";
     }
 
-    console.error(`[${timestamp}] CLAUDE Error:`, error.message);
-    // AC26: Don't crash on unknown errors, return friendly message
-    return "I encountered an unexpected error. Please check that the API server is running claude-phone api-server and is on the same network.";
+    console.error(`[${timestamp}] OLLAMA Error:`, error.message);
+    return "I encountered an unexpected error. Please check that the Ollama API server is running and reachable.";
   }
 }
 
 /**
- * End a Claude session when a call ends
+ * End an Ollama session when a call ends
  * @param {string} callId - The call UUID to end the session for
  */
 async function endSession(callId) {
   if (!callId) return;
-  
+
   const timestamp = new Date().toISOString();
-  
+
   try {
-    await axios.post(
-      `${CLAUDE_API_URL}/end-session`,
-      { callId },
-      { 
-        timeout: 5000,
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-    console.log(`[${timestamp}] CLAUDE Session ended: ${callId}`);
+    // Ollama is stateless by default; this is kept for compatibility with the existing call flow.
+    console.log(`[${timestamp}] OLLAMA Session cleanup: ${callId}`);
   } catch (error) {
-    // Non-critical, just log
-    console.warn(`[${timestamp}] CLAUDE Failed to end session: ${error.message}`);
+    console.warn(`[${timestamp}] OLLAMA Session cleanup warning: ${error.message}`);
   }
 }
 
 /**
- * Check if Claude API is available
+ * Check if Ollama API is available
  * @returns {Promise<boolean>} True if API is reachable
  */
 async function isAvailable() {
   try {
-    await axios.get(`${CLAUDE_API_URL}/health`, { timeout: 5000 });
+    await axios.get(`${OLLAMA_API_URL}/api/tags`, { timeout: 5000 });
     return true;
   } catch {
     return false;
